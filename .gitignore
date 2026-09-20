@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.*
+.codex/
+.identitymd/
+.config/gh/
+auth.json
+hosts.yml
+*.key
+*.pem
+*.tgz
