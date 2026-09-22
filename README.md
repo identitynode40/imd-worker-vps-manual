@@ -2,7 +2,7 @@
 
 Set up an **always-on IdentityMD worker on Ubuntu 22.04** using Codex with a ChatGPT subscription. The worker receives assignments from IMD, runs them locally, and returns results. It stays running after SSH disconnects and starts again after a reboot.
 
-This guide uses a dedicated Linux account, one concurrent task, one CPU's worth of compute, and a 3 GiB memory limit. Codex launches with **`gpt-6-astra` and `high` reasoning**. These settings were checked on an Ubuntu 22.04 x86_64 VPS in September 2026; model availability and subscription limits can change.
+This guide uses a dedicated Linux account, one concurrent task, one CPU's worth of compute, and a 3 GiB memory limit. Start with **`gpt-5.6-luna` and `medium` reasoning** while learning how the worker behaves. The Ubuntu setup and illustrations come from a September 2026 VPS session; the model recommendation was updated afterward. Model availability and subscription limits can change.
 
 Illustrations below come from that setup session. Browser screenshots and rendered terminal records are captioned separately; personal identifiers and authorization codes are omitted. See [image sources](assets/README.md).
 
@@ -13,9 +13,11 @@ You already have a VPS and can SSH into it. You also need:
 - Ubuntu 22.04 **x86_64**, administrator access, and enough spare RAM for the 3 GiB worker limit plus Ubuntu and other services.
 - A ChatGPT plan that includes Codex, with access to the selected model. A subscription login and an OpenAI API key use different billing paths; this guide uses the subscription.
 - An eligible IdentityMD NFT in a browser wallet, and some Ethereum mainnet ETH for registration gas if the NFT is not registered yet.
-- Access to the currently private [IdentityMD worker repository](https://github.com/Identity-md/worker) and its releases. Ask the maintainers for access first; a GitHub 404 can mean your account lacks access. The repository URL is included for reference; this manual does not include the worker package.
+- The [IdentityMD worker repository](https://github.com/Identity-md/worker) and its [releases](https://github.com/Identity-md/worker/releases) are **public**. No invitation or GitHub login is needed to download the worker. This manual links to the official package; it does not redistribute it.
 
-**Quota:** assigned work consumes your ChatGPT/Codex allowance. Always-on operation can exhaust it. `high`, concurrency 1, and CPU/RAM limits do **not** set a token budget or reserve allowance for your personal use. Additional usage may draw on paid credits if enabled on your account. Check [Codex authentication](https://learn.chatgpt.com/docs/auth) and [usage and pricing](https://learn.chatgpt.com/docs/pricing).
+**Trying it out:** use Luna/medium initially, keep concurrency at 1, and check both result quality and your [Codex usage dashboard](https://chatgpt.com/codex/settings/usage) after the first few tasks. Save Astra and higher reasoning settings for work that needs them. Luna can extend your allowance, but harder tasks may need a stronger model; see [model guidance](https://learn.chatgpt.com/docs/models).
+
+**Quota:** assigned work consumes your ChatGPT/Codex allowance. Always-on operation can exhaust it. Luna/medium, concurrency 1, and CPU/RAM limits do **not** set a token budget or reserve allowance for your personal use. Additional usage may draw on paid credits if enabled on your account. Check [Codex authentication](https://learn.chatgpt.com/docs/auth) and [usage and pricing](https://learn.chatgpt.com/docs/pricing).
 
 ## 1. Prepare Ubuntu
 
@@ -34,7 +36,7 @@ install -d -m 755 /opt/imd-worker/{bin,runtime,downloads}
 
 Stop and investigate any failed command before continuing. Do not add `imd-worker` to `sudo` or `docker`. The service needs outbound HTTPS/WSS; **no inbound IMD port** needs opening.
 
-## 2. Install Node.js and GitHub CLI
+## 2. Install Node.js
 
 IMD requires Node 22 or newer; this installs a pinned Node 24 in its own directory, leaving the system Node installation alone.
 
@@ -50,37 +52,16 @@ export PATH="/opt/imd-worker/bin:/opt/imd-worker/node/bin:$PATH"
 node --version
 ```
 
-Install `gh` from its [official Ubuntu package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), then sign in with a GitHub account that can read the private IMD releases. Choose **GitHub.com → HTTPS → web browser** and follow the device-code instructions on your own computer.
-
-```bash
-install -d -m 755 /etc/apt/keyrings
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-  -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
-chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  > /etc/apt/sources.list.d/github-cli.list
-apt-get update
-apt-get install -y gh
-gh auth login --hostname github.com --git-protocol https --web
-gh api user --jq .login
-gh api repos/Identity-md/worker --jq .permissions.pull
-```
-
-The final command should return `true`. A 404 means this login cannot read the private repository; obtain access before continuing. This GitHub login belongs to the **administrator**, for downloading releases. The worker does not need your personal GitHub credentials for ordinary IMD submissions.
-
-<img src="assets/github-connected.png" alt="GitHub device authorization completed: Your device is now connected" width="560">
-
-*Browser screenshot: successful GitHub device authorization. Repository access still needs the separate check above.*
-
 ## 3. Install IMD and Codex
 
-Download the latest private worker release and verify its checksum before installing. The worker is distributed through GitHub releases, not the public npm registry.
+Download the latest public worker release and verify its checksum before installing. The worker is distributed through GitHub releases, not the public npm registry. These downloads need no GitHub credentials or `gh` installation.
 
 ```bash
 imd_release_dir="$(mktemp -d /opt/imd-worker/downloads/release.XXXXXX)"
-gh release download --repo Identity-md/worker \
-  --pattern identitymd-worker.tgz --pattern SHA256SUMS \
-  --dir "$imd_release_dir"
+curl -fSL https://github.com/Identity-md/worker/releases/latest/download/identitymd-worker.tgz \
+  -o "$imd_release_dir/identitymd-worker.tgz"
+curl -fSL https://github.com/Identity-md/worker/releases/latest/download/SHA256SUMS \
+  -o "$imd_release_dir/SHA256SUMS"
 (cd "$imd_release_dir" && sha256sum --check SHA256SUMS)
 
 npm install --global --prefix /opt/imd-worker/runtime \
@@ -90,7 +71,7 @@ chmod -R a+rX /opt/imd-worker/node-v24.21.0-linux-x64 /opt/imd-worker/runtime
 ln -s ../runtime/bin/imd /opt/imd-worker/bin/imd
 ```
 
-The installed worker invokes Codex with `--ignore-user-config`, so setting the model only in `~/.codex/config.toml` is insufficient. Create a root-owned wrapper that selects the model, `high` reasoning, and ChatGPT authentication for worker launches:
+The worker invokes Codex with `--ignore-user-config`, so setting the model only in `~/.codex/config.toml` is insufficient. Create a root-owned wrapper with Luna/medium defaults and ChatGPT authentication. Step 5 also configures IMD's task-specific model choices.
 
 ```bash
 cat > /opt/imd-worker/bin/codex <<'CODEX'
@@ -100,8 +81,8 @@ unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN
 real=/opt/imd-worker/runtime/bin/codex
 if [ "${1-}" = exec ]; then
   shift
-  exec "$real" exec --model gpt-6-astra \
-    -c 'model_reasoning_effort="high"' \
+  exec "$real" exec -c 'model="gpt-5.6-luna"' \
+    -c 'model_reasoning_effort="medium"' \
     -c 'forced_login_method="chatgpt"' "$@"
 fi
 exec "$real" "$@"
@@ -119,7 +100,7 @@ install -d -m 700 -o imd-worker -g imd-worker \
 runuser -l imd-worker -c 'node --version && codex --version && imd help'
 ```
 
-The inspected worker supplies no conflicting model or reasoning flag. The wrapper selects `high` for its launches; it is **not a universal blacklist** against every possible nested or direct model invocation. Recheck this behavior when updating the worker or Codex.
+The wrapper supplies defaults, **not a universal model blacklist**. Current worker releases can pass task-specific model and reasoning options, so complete the inference configuration in step 5 before starting. Recheck this behavior when updating the worker or Codex.
 
 ## 4. Sign in to Codex with ChatGPT
 
@@ -138,11 +119,11 @@ runuser -l imd-worker -c 'codex login status'
 runuser -l imd-worker -c 'codex exec --sandbox read-only --skip-git-repo-check --ignore-user-config "Reply exactly READY. Do not use tools or spawn agents."'
 ```
 
-The second command makes a small model request and consumes allowance. Confirm the launch reports the intended model and `high`, and the response is `READY`. If your account cannot use this model, edit the root-owned wrapper to select an available model before continuing.
+The second command makes a small model request and consumes allowance. Confirm the launch reports **`gpt-5.6-luna` and `medium`**, and the response is `READY`. If your account cannot use this model, choose an available model in both the wrapper and step 5's inference configuration before continuing.
 
 <img src="assets/model-check.png" alt="Recorded verification showing gpt-6-astra, high reasoning, and the READY response" width="760">
 
-*Recorded verification report from the example VPS. A helper summarized the Codex session into this JSON; the command above produces the normal CLI output.*
+*Historical verification report from the original Astra/high setup, not the recommended starting settings. Your check should show Luna/medium. A helper summarized this older session into JSON; the command above produces normal CLI output.*
 
 Authentication is stored under `/home/imd-worker/.codex/`. Do not copy auth files, login codes, or API keys into this manual or a Git repository.
 
@@ -168,11 +149,32 @@ runuser -l imd-worker -c 'imd skills'
 runuser -l imd-worker -c 'imd tools'
 ```
 
+Before starting, set IMD's inference preferences for this trial. The following updates only the Codex entries in the existing configuration and preserves the pairing keys without printing them:
+
+```bash
+runuser -l imd-worker -c 'node --input-type=module' <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+const path = `${homedir()}/.identitymd/config.json`;
+const config = JSON.parse(readFileSync(path, 'utf8'));
+config.inference ??= {};
+for (const tier of ['economy', 'standard', 'premium']) {
+  config.inference[tier] ??= {};
+  config.inference[tier].codex = { model: 'gpt-5.6-luna', effort: 'medium' };
+}
+writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+NODE
+```
+
+Economy and standard assignments now select Luna/medium. In the current worker, a premium entry that does not meet its premium-model requirements disables advertising that capability; this deliberately opts out of premium work instead of allowing its Astra/xhigh default. These are worker preferences, not a sandbox or a spending cap. Recheck them after updates.
+
 Skills are enabled by default. To opt out of one, run `runuser -l imd-worker -c 'imd skills remove SKILL_ID'`, replacing `SKILL_ID` with an ID from the list. Restart the service after later changes. Skill opt-outs guide assignment selection; they are not a security boundary. Optional tools such as Foundry or browser-checker Docker workflows need separate setup.
 
 ## 6. Enable always-on operation
 
 Create this system-level service. It runs as the unprivileged worker account, limits resources, and gives it writable storage in its own home. Use this service consistently; do not also install a second service with `imd service install`.
+
+**For an initial trial**, replace `systemctl enable --now imd-worker.service` below with `systemctl start imd-worker.service`. On a fresh setup this starts it without enabling boot startup. Watch the first few tasks and your allowance, then stop it when idle with `systemctl stop imd-worker.service`. Enable always-on operation once you are comfortable with the results and usage.
 
 ```bash
 cat > /etc/systemd/system/imd-worker.service <<'UNIT'
@@ -256,6 +258,32 @@ These are separate actions, not a script to run together. Closing SSH or the log
 **Updates:** automatic updates are off because the installation is root-owned. When idle, stop the service, download and checksum a fresh worker release as in step 3, and rerun that step's `npm install` command as root. Keep the existing account, wrapper, service, and authentication directories; do not repeat their creation or NFT registration. Check release changes before restarting the service. A server/client build mismatch warrants checking for a compatible release.
 
 **Tools and Git:** Codex can use tools available to the worker account. Network and web-search access depend on the task's runtime profile; research tasks and connected coding tasks have different permissions. IMD uses Git to prepare changes and uploads a Git bundle and results using device-signed requests for review. Ordinary submission does not require the worker to push a branch to your GitHub account.
+
+<details>
+<summary>Optional: GitHub CLI for your own repositories</summary>
+
+Skip this for worker installation, public release downloads, and ordinary IMD submissions. If you want the worker account to use GitHub for your own projects, install `gh` from its [official Ubuntu package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md):
+
+```bash
+install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  > /etc/apt/sources.list.d/github-cli.list
+apt-get update
+apt-get install -y gh
+runuser -l imd-worker -c 'gh auth login --hostname github.com --git-protocol https --web'
+runuser -l imd-worker -c 'gh api user --jq .login'
+```
+
+Choose **GitHub.com → HTTPS → web browser** and follow the device-code instructions on your own computer. Confirm the final command shows the intended GitHub account. Use a dedicated account with access only to the repositories you want it to work on.
+
+<img src="assets/github-connected.png" alt="GitHub device authorization completed: Your device is now connected" width="560">
+
+*Browser screenshot: successful GitHub device authorization. This optional login is independent of public worker downloads.*
+
+</details>
 
 **Keep private:** `~/.codex/`, `~/.identitymd/config.json` (device private key), GitHub credentials, wallet addresses, and temporary authorization codes. Redact these before sharing logs or screenshots. Runtime permissions reduce access but are not a reason to put unrelated secrets in the worker's home.
 
